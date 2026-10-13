@@ -1,0 +1,6 @@
+.venv/
+.env
+__pycache__/
+jarvis_workspace/
+backups_jarvis/
+*.log
