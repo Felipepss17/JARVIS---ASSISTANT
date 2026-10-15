@@ -35,8 +35,11 @@ os.makedirs(IMPORTADOS, exist_ok=True)
 os.makedirs(PLUGINS, exist_ok=True)
 
 # Arquivos do projeto que o JARVIS pode LER (nunca alterar)
-LEITURA_PROJETO = {"main.py", "acoes.py", "ferramentas.py",
-                   "requirements.txt", "README.md", "jarvis.log"}
+LEITURA_PROJETO = {
+    "main.py", "acoes.py", "ferramentas.py", "requirements.txt", "README.md", "jarvis.log",
+    "jarvis/__init__.py", "jarvis/settings.py", "jarvis/audio.py",
+    "jarvis/workers.py", "jarvis/ui.py", "jarvis/controller.py",
+}
 EXT_BLOQUEADAS = {".exe", ".bat", ".cmd", ".vbs", ".ps1", ".lnk",
                   ".dll", ".msi", ".scr", ".reg"}
 EXT_CODIGO = {".py", ".pyw", ".js", ".mjs", ".ts", ".ps1", ".bat", ".cmd", ".sh", ".vbs"}
@@ -557,6 +560,8 @@ def backup_codigo(confirmar=None):
                 z.write(arq, os.path.basename(arq))
         for arq in glob.glob(os.path.join(PLUGINS, "*.py")):
             z.write(arq, "plugins/" + os.path.basename(arq))
+        for arq in glob.glob(os.path.join(PROJETO, "jarvis", "*.py")):
+            z.write(arq, "jarvis/" + os.path.basename(arq))
     antigos = sorted(glob.glob(os.path.join(BACKUPS, "codigo_*.zip")))
     for velho in antigos[:-MANTER_BACKUPS]:
         os.remove(velho)
@@ -611,7 +616,8 @@ ESQUEMA = [
     _t("ler_ficheiro",
        "Lê um arquivo de jarvis_workspace (inclusive importados/<projeto>/...), ou um destes arquivos do "
        "projeto (somente leitura): main.py, acoes.py, ferramentas.py, requirements.txt, README.md, "
-       "jarvis.log, plugins/<nome>.py. Arquivos grandes vêm em partes: use 'inicio' para continuar.",
+       "jarvis.log, jarvis/settings.py, jarvis/audio.py, jarvis/workers.py, jarvis/ui.py, "
+       "jarvis/controller.py, plugins/<nome>.py. Arquivos grandes vêm em partes: use 'inicio' para continuar.",
        {"caminho": _S, "inicio": {"type": "integer", "description": "Posição inicial (padrão 0)"}},
        ["caminho"]),
     _t("criar_ficheiro",

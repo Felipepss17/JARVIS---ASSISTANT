@@ -4,3 +4,6 @@ __pycache__/
 jarvis_workspace/
 backups_jarvis/
 *.log
+/assets/voices/*.onnx
+/assets/voices/*.onnx.json
+/assets/voices/*.wav
