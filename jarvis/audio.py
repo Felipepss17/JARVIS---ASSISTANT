@@ -144,6 +144,26 @@ def has_content(rest):
     return any(len(w) >= 3 for w in rest.split())
 
 
+def _provavel_eco(texto, fala_assistente):
+    """Filtra a transcrição quando ela parece repetir o áudio do próprio JARVIS."""
+    palavras_usuario = re.findall(r"\w+", strip_accents(texto.casefold()))
+    palavras_assistente = re.findall(r"\w+", strip_accents(fala_assistente.casefold()))
+    if not palavras_usuario or not palavras_assistente:
+        return False
+
+    usuario = " ".join(palavras_usuario)
+    assistente = " ".join(palavras_assistente)
+    if usuario == assistente:
+        return True
+
+    # Transcrições parciais do alto-falante costumam ser uma frase contígua
+    # da resposta. Exigimos ao menos três palavras para evitar falsos positivos.
+    if len(palavras_usuario) >= 3 and usuario in assistente:
+        return True
+
+    return difflib.SequenceMatcher(None, usuario, assistente).ratio() >= 0.78
+
+
 def build_stt(status_cb):
     if STT_ENGINE == "whisper":
         if WhisperModel is None:
@@ -372,13 +392,12 @@ class ListenerWorker(QThread):
         found, rest = split_wake(text)
 
         if eco is not None:
-            if not found:
+            if _provavel_eco(text, eco):
                 return
-            if WAKE_WORD in eco.lower():
-                return
-            if self.speaking.is_set():
-                self._interromper(rest)
-                return
+            # Durante a fala, a pessoa pode interromper com uma frase normal;
+            # a palavra de ativação continua sendo opcional.
+            self._interromper(rest if found else text)
+            return
 
         if self.awaiting_command:
             command = rest if found else text
@@ -397,6 +416,3 @@ class ListenerWorker(QThread):
         else:
             self._start_waiting()
             self.wake.emit()
-
-
-\n

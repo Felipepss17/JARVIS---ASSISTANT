@@ -1,10 +1,12 @@
 """Coordenação dos eventos, workers, interface e comandos do J.A.R.V.I.S."""
 import os
 import re
+import json
 import subprocess
 import webbrowser
 
 import keyboard
+import acoes
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QStyle
@@ -15,6 +17,16 @@ from .audio import (
     mentions_studio, tocar_som,
 )
 from .settings import *  # noqa: F403
+from .memory import CONFIRM_CLEAR_ALL, clear_all_memories
+from .reminders import (
+    CONFIRM_PREFIX as REMINDER_CONFIRM_PREFIX,
+    confirm_reminder,
+    due_reminders,
+    format_due,
+)
+from .screen_vision import capture_primary_screen_data_url, is_screen_question
+from .system_status import format_system_status, is_system_status_request
+from .lifecycle import is_restart_request, launch_delayed_restart
 from .ui import ChatWindow, FloatingReactor
 from .workers import AIWorker, ActionWorker, SpeakWorker
 
@@ -33,8 +45,15 @@ class JarvisController(QObject):
         self.speakers = []
         self.pending_speech = 0
         self.history = []
+        self.memory_clear_pending = False
+        self.restart_requested = False
+        self.pending_reminder = None
         self.reactor_pinned = False
         self.has_key = bool(os.environ.get("GROQ_API_KEY"))
+        from . import roblox_bridge
+        _bridge, bridge_error = roblox_bridge.start_server()
+        print("[roblox] ponte local ativa em 127.0.0.1:18743" if not bridge_error
+              else f"[roblox] ponte do Studio indisponível: {bridge_error}")
 
         self.reactor_window = FloatingReactor()
         self.reactor_window.hide()
@@ -63,6 +82,10 @@ class JarvisController(QObject):
             print(f"[atalho] não consegui registrar Ctrl+Espaço: {e}")
 
         self.start_listener()
+        self.reminder_timer = QTimer(self)
+        self.reminder_timer.timeout.connect(self.check_due_reminders)
+        self.reminder_timer.start(1000)
+        QTimer.singleShot(1500, self.check_due_reminders)
 
     def open_chat_ui(self):
         if not self.chat_window:
@@ -97,17 +120,42 @@ class JarvisController(QObject):
                 self.resolve_confirmation(decisao)
             return
 
+        if self.memory_clear_pending:
+            self.resolve_memory_clear(text, "chat")
+            return
+
+        if self.pending_reminder is not None:
+            self.resolve_reminder_confirmation(text, "chat")
+            return
+
+        if is_restart_request(text):
+            self.restart_requested = True
+            self.chat_log("JARVIS", "Reiniciando o JARVIS agora, senhor.")
+            QTimer.singleShot(150, QApplication.quit)
+            return
+
         if any(f in lower for f in ("fechar jarvis", "encerrar jarvis", "desligar jarvis")):
             self.chat_log("JARVIS", "Desligando sistemas. Até logo, senhor.")
             QTimer.singleShot(1500, QApplication.quit)
+            return
+
+        if is_system_status_request(text):
+            self.say(format_system_status(self))
             return
 
         if self.ai_busy or self.action_busy:
             self.chat_log("JARVIS", "Ainda estou processando o pedido anterior, senhor.")
             return
 
+        if is_screen_question(text):
+            self.request_screen_analysis(text, "chat")
+            return
+
         # Se for um comando simples de ação (como abrir o YouTube, pastas, etc.), tenta executar
-        if any(w in lower for w in ["abra", "abrir", "abre", "pasta"]) and "http" not in lower:
+        if (acoes.is_memory_command(text) or acoes.is_routine_command(text)
+                or acoes.is_reminder_command(text)
+                or acoes.is_inbox_command(text)
+                or (any(w in lower for w in ["abra", "abrir", "abre", "pasta"]) and "http" not in lower)):
             self.action_busy = True
             self.action_worker = ActionWorker(text, "chat")
             self.action_worker.done.connect(self.on_action_done)
@@ -233,6 +281,19 @@ class JarvisController(QObject):
         self.chat_log("Felipe (voz)", text)
         lower = text.lower()
 
+        if self.memory_clear_pending:
+            self.resolve_memory_clear(text, "voz")
+            return
+
+        if self.pending_reminder is not None:
+            self.resolve_reminder_confirmation(text, "voz")
+            return
+
+        if is_restart_request(text):
+            self.restart_requested = True
+            self.say("Reiniciando o JARVIS agora, senhor.", QApplication.quit)
+            return
+
         if any(w in lower for w in ["desligar", "desligue", "encerrar sistema", "fechar jarvis"]):
             self.say("Desligando sistemas. Até logo, senhor.", QApplication.quit)
             return
@@ -242,7 +303,16 @@ class JarvisController(QObject):
             QTimer.singleShot(1000, self.open_chat_ui)
             return
 
+        if is_system_status_request(text):
+            self.say(format_system_status(self))
+            return
+
         if self.action_busy:
+            return
+        if self.ai_busy:
+            return
+        if is_screen_question(text):
+            self.request_screen_analysis(text, "voz")
             return
         self.action_busy = True
         self.action_worker = ActionWorker(text, "voz")
@@ -261,6 +331,26 @@ class JarvisController(QObject):
     def on_action_done(self, text, reply, source):
         self.action_busy = False
         lower = text.lower()
+        if reply == CONFIRM_CLEAR_ALL:
+            self.memory_clear_pending = True
+            prompt = "Confirma apagar todas as memórias pessoais? Responda sim ou não."
+            if source == "chat":
+                self.chat_log("JARVIS", prompt)
+            self.say(prompt)
+            return
+        if reply.startswith(REMINDER_CONFIRM_PREFIX):
+            try:
+                self.pending_reminder = json.loads(reply[len(REMINDER_CONFIRM_PREFIX):])
+                proposal = self.pending_reminder
+                prompt = (
+                    f"Confirma o lembrete: {proposal['title']} em "
+                    f"{format_due(proposal['due_at'])}? Responda sim ou não."
+                )
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                self.pending_reminder = None
+                prompt = "Não consegui entender esse horário. Tente criar o lembrete novamente."
+            self.say(prompt)
+            return
         if reply:
             self.say(reply)
         elif self.parece_abrir(lower, source):
@@ -270,6 +360,98 @@ class JarvisController(QObject):
 
         if source == "voz" and self.pending_speech == 0 and not self.ai_busy and self.listener:
             self.listener.resume()
+
+    def resolve_memory_clear(self, text, source):
+        decision = interpretar_sim_nao(text)
+        if decision is None:
+            reply = "Responda sim para apagar todas as memórias ou não para cancelar."
+        else:
+            self.memory_clear_pending = False
+            if decision:
+                total = clear_all_memories()
+                reply = f"Apaguei {total} memórias pessoais, senhor."
+            else:
+                reply = "Certo, mantive suas memórias, senhor."
+        if source == "chat":
+            self.chat_log("JARVIS", reply)
+        self.say(reply)
+
+    def resolve_reminder_confirmation(self, text, source):
+        decision = interpretar_sim_nao(text)
+        if decision is None:
+            self.say("Responda sim para salvar o lembrete ou não para cancelar.")
+            return
+        proposal = self.pending_reminder
+        self.pending_reminder = None
+        if decision:
+            try:
+                reply = confirm_reminder(proposal)
+            except ValueError as error:
+                reply = str(error)
+        else:
+            reply = "Certo, não salvei o lembrete."
+        self.say(reply)
+
+    def check_due_reminders(self):
+        try:
+            due = due_reminders()
+        except Exception as error:
+            print(f"[lembretes] não consegui consultar lembretes: {error}")
+            return
+        if due:
+            titles = "; ".join(item["title"] for item in due)
+            self.say(f"Lembrete: {titles}.")
+
+    def request_screen_analysis(self, question, source):
+        if not self.has_key:
+            self.say("Para analisar a tela, configure primeiro a chave da Groq no arquivo .env.")
+            return
+        if self.ai_busy or self.action_busy:
+            self.say("Aguarde eu terminar a tarefa atual antes de analisar a tela.")
+            return
+        chat_was_visible = bool(self.chat_window and self.chat_window.isVisible())
+        reactor_was_visible = self.reactor_window.isVisible()
+        if self.chat_window:
+            self.chat_window.hide()
+        self.reactor_window.hide()
+        self.ai_busy = True
+        self.ai_origin = source
+        if source == "chat":
+            self.chat_log("JARVIS", "Analisando a captura atual do monitor principal…")
+        QTimer.singleShot(
+            250,
+            lambda: self.capture_and_analyze_screen(
+                question, source, chat_was_visible, reactor_was_visible
+            ),
+        )
+
+    def capture_and_analyze_screen(self, question, source, chat_was_visible, reactor_was_visible):
+        try:
+            image_url = capture_primary_screen_data_url()
+        except Exception as error:
+            self.ai_busy = False
+            print(f"[tela] captura falhou: {error}")
+            self.say("Não consegui capturar o monitor principal, senhor.")
+        else:
+            self.history.append({"role": "user", "content": question})
+            self.history = self.history[-MAX_HISTORY:]
+            multimodal_request = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            }]
+            self.ai_worker = AIWorker(multimodal_request, agente=False, vision=True)
+            self.ai_worker.answer.connect(self.on_ai_answer)
+            self.ai_worker.failed.connect(self.on_ai_failed)
+            self.ai_worker.start()
+        finally:
+            if chat_was_visible and self.chat_window:
+                self.chat_window.show()
+                self.chat_window.raise_()
+            if reactor_was_visible:
+                self.reactor_window.show()
 
     def execute_command(self, text):
         clean_text = text.lower()
@@ -388,6 +570,8 @@ class JarvisController(QObject):
             self.say(error)
 
     def shutdown(self):
+        from . import roblox_bridge
+        roblox_bridge.stop_server()
         self.stop_speaking()
         if self.confirm_worker is not None:
             self.confirm_worker.decide(False)
@@ -398,6 +582,11 @@ class JarvisController(QObject):
             keyboard.unhook_all()
         except Exception:
             pass
-
-
-\n
+        if self.restart_requested:
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            main_script = os.path.join(project_root, "main.py")
+            try:
+                launch_delayed_restart(project_root, main_script)
+                print("[jarvis] nova instância agendada")
+            except Exception as error:
+                print(f"[jarvis] não consegui reiniciar: {error}")

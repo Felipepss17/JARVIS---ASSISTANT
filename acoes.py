@@ -17,6 +17,11 @@ import shutil
 from datetime import datetime
 
 import keyboard
+from jarvis.memory import handle_command as handle_memory_command, is_memory_command
+from jarvis.routines import is_routine_command, run_study_mode
+from jarvis.reminders import handle_command as handle_reminder_command, is_reminder_command
+from jarvis.idea_inbox import handle_command as handle_inbox_command, is_inbox_command
+from jarvis.file_search import open_best_match
 
 # ======================= SUAS CONFIGURAÇÕES =======================
 # Jogos favoritos do Roblox: "nome que você fala": ID do jogo.
@@ -289,6 +294,28 @@ def h_figma(t):
     return "Abrindo o Figma, senhor."
 
 
+# ---------------- busca inteligente de documentos ----------------
+def h_busca_arquivo(t):
+    if not re.search(r"\b(?:arquivo|documento|trabalho|pdf|planilha|apresentacao|redacao|relatorio)\b", t):
+        return None
+    if not re.search(r"\b(?:abre|abrir|abra|encontre|encontrar|localize|localizar|ache|achar|busque|buscar|procure|procurar)\b", t):
+        return None
+    try:
+        result = open_best_match(t)
+    except OSError as error:
+        print(f"[arquivos] não consegui abrir o resultado: {error}")
+        return "Encontrei o arquivo, mas o Windows não conseguiu abri-lo, senhor."
+    if result is None:
+        return "Não encontrei um documento parecido em Documentos, Área de Trabalho ou Downloads, senhor."
+    status, data = result
+    if status == "opened":
+        return f"Abri {os.path.basename(data)}, senhor."
+    if status in {"ambiguous", "low_confidence"}:
+        nomes = ", ".join(os.path.basename(path) for _score, path in data)
+        return f"Achei algumas possibilidades: {nomes}. Qual delas o senhor quer abrir?"
+    return "A busca por arquivos só está disponível no Windows, senhor."
+
+
 # ---------------- pesquisa no Google ----------------
 def h_google(t):
     m = re.match(r"^(?:pesquis\w+|procur\w+|busc\w+)\s+(.*)$", t)
@@ -304,10 +331,19 @@ def h_google(t):
 
 
 HANDLERS = [h_modo_dev, h_bloquear, h_volume, h_midia, h_hora_data,
-            h_youtube, h_roblox_jogo, h_figma, h_google]
+            h_youtube, h_roblox_jogo, h_figma, h_busca_arquivo, h_google]
 
 
 def try_handle(text):
+    raw_text = re.sub(r"\s+", " ", str(text)).strip()
+    if is_inbox_command(raw_text):
+        return handle_inbox_command(raw_text)
+    if is_memory_command(raw_text):
+        return handle_memory_command(raw_text)
+    if is_reminder_command(raw_text):
+        return handle_reminder_command(raw_text)
+    if is_routine_command(raw_text):
+        return run_study_mode()
     t = clean(text)
     print(f"[acoes] texto limpo: {t!r}")
     for handler in HANDLERS:

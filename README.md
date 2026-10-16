@@ -11,6 +11,11 @@ Assistente pessoal para Windows, com interface de desktop, comandos por voz e ch
 - Chat com IA da Groq, incluindo chamadas de ferramentas para ler e criar arquivos na pasta `jarvis_workspace`, importar projetos públicos do GitHub e gerenciar plugins.
 - Comandos locais para abrir programas e sites, pesquisar na web, controlar mídia e volume e iniciar o Roblox Studio.
 - Plugins Python para acrescentar comandos personalizados.
+- Memória pessoal local em SQLite, com comandos para salvar, consultar e apagar informações.
+- Rotina "modo estudo" para abrir aplicativos, pasta de trabalho, playlists para estudar e configurações de foco.
+- Lembretes locais com confirmação de data e hora, armazenamento em SQLite e aviso enquanto o JARVIS está aberto.
+- Análise opcional da tela a pedido; a captura é enviada à Groq e não é salva em disco.
+- Consulta local de bateria, volume, microfone, janelas abertas e tarefas do JARVIS.
 - Confirmação antes de operações sensíveis oferecidas pelas ferramentas do chat, como executar código, instalar pacotes ou criar/remover plugins.
 
 ## Requisitos
@@ -53,6 +58,39 @@ Sem essa variável, os comandos locais continuam disponíveis, mas os recursos d
 
 O JARVIS tenta a voz neural masculina do Edge TTS (`pt-BR-AntonioNeural`) e, se o serviço online estiver indisponível, usa o modelo Piper `pt_BR-faber-medium` local. Para preparar o modelo em uma instalação nova, execute `python -m piper.download_voices --download-dir assets/voices pt_BR-faber-medium`. O modelo local permite falar sem internet depois de baixado.
 
+## Memória pessoal
+
+Use comandos no chat ou por voz, sempre pedindo explicitamente para guardar algo:
+
+- `Lembre que prefiro respostas curtas` para salvar uma preferência ou contexto.
+- `O que você lembra de mim?` para consultar as memórias.
+- `Esqueça que prefiro respostas curtas` para apagar uma memória específica.
+- `Apague todas as memórias` para pedir a limpeza completa; o JARVIS pede confirmação.
+
+As memórias ficam em `jarvis_workspace/memoria.sqlite3`, localmente, e não são incluídas nos backups de código. Por padrão, elas não são enviadas à Groq. Para permitir que a IA use esse contexto nas conversas, adicione `JARVIS_COMPARTILHAR_MEMORIA_COM_IA=1` ao `.env`; nesse modo, as memórias salvas entram no contexto enviado à API.
+
+## Rotinas
+
+Diga `modo estudo` por voz ou no chat. Na primeira execução, o JARVIS cria `jarvis_workspace/rotinas.json`; edite esse arquivo para escolher os atalhos de aplicativos, pastas, links, opção de mudo e configurações que a rotina deve abrir. O exemplo inicial abre o Visual Studio Code, a pasta de trabalho e resultados de playlists para estudar. No Windows, a rotina abre as configurações de foco/Não Perturbe para você ativar ou ajustar essa opção.
+
+## Agenda e lembretes
+
+Diga `me lembre de estudar amanhã às 19h` ou `me lembre de tomar água em 30 minutos`. O JARVIS repete o compromisso e o horário para você confirmar antes de salvar. Use `meus lembretes` para consultar ou `apague lembrete 2` para cancelar pelo número exibido. Os dados ficam em `jarvis_workspace/lembretes.sqlite3`; os avisos acontecem enquanto o aplicativo está aberto.
+
+
+
+## Caixa de ideias e tarefas
+
+Diga `anote uma ideia: criar um jogo de Roblox` ou `guarde a tarefa de estudar matemática`. Consulte com `minhas ideias`, `minhas tarefas` ou `caixa de ideias`; marque um item concluído com `concluir tarefa 2` e remova com `apague ideia 3`. Os dados ficam localmente em `jarvis_workspace/caixa_ideias.sqlite3`.
+
+## Entendimento da tela
+
+Pergunte `o que está acontecendo aqui?` ou `analise a tela`. O JARVIS captura o monitor principal e envia a imagem à Groq para análise, sem pedir confirmação. A imagem é reduzida, mantida em memória durante a requisição e não é gravada em arquivo. O recurso exige `GROQ_API_KEY` e usa o modelo de visão configurado em `JARVIS_VISION_MODEL` (padrão `qwen/qwen3.8-27b`).
+
+## Estado do sistema
+
+Pergunte `estado do sistema` ou `como está o sistema?` para consultar bateria, volume, microfone, janelas abertas e tarefas atuais do JARVIS. As informações são coletadas localmente e respondidas pelo próprio aplicativo.
+
 ## Executar
 
 Com o ambiente virtual ativado:
@@ -88,11 +126,22 @@ Para testar especificamente a voz neural do Edge TTS, use `$env:JARVIS_TEST_EDGE
 - `jarvis/workers.py`: tarefas em background para IA, comandos e fala.
 - `jarvis/ui.py`: janela de chat e indicador flutuante.
 - `jarvis/controller.py`: coordenação da interface, ações, áudio e workers.
+- `jarvis/routines.py`: execução das rotinas locais configuráveis.
+- `jarvis/reminders.py`: criação, consulta e agendamento de lembretes locais.
+- `jarvis/screen_vision.py`: reconhecimento de pedidos e captura temporária do monitor principal.
+- `jarvis/system_status.py`: leitura local de bateria, áudio, janelas abertas e dispositivos.
+- `jarvis/file_search.py`: busca de documentos por nome nas pastas pessoais permitidas.
+- `jarvis/idea_inbox.py`: caixa SQLite para capturar ideias e tarefas por voz.
+- `jarvis/roblox_bridge.py` e `roblox/`: ponte local e plugin opcional para analisar erros/avisos do Output do Roblox Studio.
 - `acoes.py`: comandos locais reconhecidos diretamente, sem depender da IA.
 - `ferramentas.py`: ferramentas do chat, operações no workspace, importação de projetos e gerenciamento de plugins.
 - `plugins/`: plugins de comandos por voz.
 - `jarvis_workspace/`: arquivos de trabalho e projetos importados pelo assistente.
 - `assets/sounds/`: efeitos sonoros da interface.
+
+Para configurar a análise de scripts e do Output do Roblox Studio, siga [ROBLOX.md](ROBLOX.md).
+Para abrir documentos por voz, diga, por exemplo, “abre o trabalho de ciências”. A busca usa Documentos, Área de Trabalho e Downloads; consulte `JARVIS_FILE_SEARCH_DIRS` em `.env.example` para configurar outras pastas.
+Para reiniciar o aplicativo, diga “reinicie o JARVIS” ou use o mesmo comando no chat. O JARVIS fecha a instância atual e inicia outra; isso não reinicia o Windows.
 
 ## Observações
 

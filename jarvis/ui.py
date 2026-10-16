@@ -374,6 +374,3 @@ class FloatingReactor(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = False
-
-
-\n

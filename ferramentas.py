@@ -38,7 +38,7 @@ os.makedirs(PLUGINS, exist_ok=True)
 LEITURA_PROJETO = {
     "main.py", "acoes.py", "ferramentas.py", "requirements.txt", "README.md", "jarvis.log",
     "jarvis/__init__.py", "jarvis/settings.py", "jarvis/audio.py",
-    "jarvis/workers.py", "jarvis/ui.py", "jarvis/controller.py",
+    "jarvis/workers.py", "jarvis/ui.py", "jarvis/controller.py", "jarvis/memory.py", "jarvis/idea_inbox.py", "jarvis/routines.py", "jarvis/reminders.py", "jarvis/screen_vision.py", "jarvis/system_status.py",
 }
 EXT_BLOQUEADAS = {".exe", ".bat", ".cmd", ".vbs", ".ps1", ".lnk",
                   ".dll", ".msi", ".scr", ".reg"}
@@ -55,6 +55,10 @@ MANTER_BACKUPS = 15
 MAX_DOWNLOAD = 25 * 1024 * 1024          # zip baixado
 MAX_DESCOMPACTADO = 120 * 1024 * 1024    # tamanho total depois de extrair
 MAX_ARQUIVOS_ZIP = 3000
+ROBLOX_EXTENSOES = {".lua", ".luau"}
+ROBLOX_IGNORAR = {".git", "node_modules", "build", "dist", "target", ".vscode"}
+MAX_ROBLOX_ARQUIVOS = 500
+MAX_ROBLOX_SCRIPT = 30000
 
 NEGADO = "[cancelado] O senhor não autorizou esta ação."
 NOME_PLUGIN = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
@@ -77,8 +81,8 @@ PADROES_RISCO = [(re.compile(p), d) for p, d in [
     (r"\bwinreg\b|\bctypes\b", "mexe no registro do Windows ou em DLLs (winreg/ctypes)"),
     (r"\bkeyboard\.|\bpynput\b|\bpyautogui\b", "captura ou simula teclado/mouse"),
     (r"os\.environ|getenv|\.env\b", "lê variáveis de ambiente ou .env (possível acesso a chaves)"),
-    (r"browser_cookie3|Login Data|wallet\.dat|discord.{0,20}token",
-     "acessa dados de navegador, carteiras ou tokens"),
+    (r"browser_cookie3|Login Data|wallet\.dat",
+     "acessa dados de navegador ou carteiras"),
 ]]
 
 
@@ -158,6 +162,77 @@ def ler_ficheiro(confirmar, caminho, inicio=0):
     if faltam > 0:
         trecho += f"\n[... faltam {faltam} caracteres; use inicio={inicio + MAX_LEITURA} para continuar]"
     return trecho
+
+
+def _pasta_roblox():
+    """Raiz opcional de scripts do usuário, configurada em JARVIS_ROBLOX_PROJECT_DIR."""
+    caminho = os.environ.get("JARVIS_ROBLOX_PROJECT_DIR", "").strip().strip('"')
+    if not caminho:
+        return None
+    raiz = os.path.realpath(os.path.expandvars(os.path.expanduser(caminho)))
+    return raiz if os.path.isdir(raiz) else None
+
+
+def _resolver_script_roblox(caminho):
+    raiz = _pasta_roblox()
+    if not raiz:
+        raise ValueError("Configure JARVIS_ROBLOX_PROJECT_DIR com a pasta do projeto Roblox no arquivo .env e reinicie o JARVIS.")
+    destino = os.path.realpath(os.path.join(raiz, caminho))
+    try:
+        dentro = os.path.commonpath([destino, raiz]) == raiz
+    except ValueError:
+        dentro = False
+    if not dentro:
+        raise ValueError("caminho fora do projeto Roblox configurado")
+    if os.path.splitext(destino)[1].lower() not in ROBLOX_EXTENSOES:
+        raise ValueError("só é permitido ler arquivos .lua e .luau")
+    return destino
+
+
+def roblox_list_scripts(confirmar=None, busca=""):
+    raiz = _pasta_roblox()
+    if not raiz:
+        return _pasta_roblox_erro()
+    encontrados = []
+    termo = str(busca).casefold().strip()
+    for pasta, diretorios, arquivos in os.walk(raiz, followlinks=False):
+        diretorios[:] = [d for d in diretorios if d.casefold() not in ROBLOX_IGNORAR
+                         and not os.path.islink(os.path.join(pasta, d))]
+        for nome in sorted(arquivos):
+            if os.path.splitext(nome)[1].lower() not in ROBLOX_EXTENSOES:
+                continue
+            caminho = os.path.join(pasta, nome)
+            if os.path.islink(caminho):
+                continue
+            relativo = os.path.relpath(caminho, raiz).replace(os.sep, "/")
+            if termo and termo not in relativo.casefold():
+                continue
+            encontrados.append(relativo)
+            if len(encontrados) >= MAX_ROBLOX_ARQUIVOS:
+                return "\n".join(encontrados) + f"\n[limite de {MAX_ROBLOX_ARQUIVOS} scripts]"
+    return "\n".join(encontrados) or "Nenhum script .lua ou .luau encontrado."
+
+
+def _pasta_roblox_erro():
+    return "Pasta Roblox não configurada ou indisponível. Defina JARVIS_ROBLOX_PROJECT_DIR no .env e reinicie o JARVIS."
+
+
+def roblox_read_script(confirmar=None, caminho=""):
+    destino = _resolver_script_roblox(caminho)
+    if not os.path.isfile(destino):
+        return "[erro] script não encontrado."
+    if os.path.getsize(destino) > MAX_ROBLOX_SCRIPT:
+        return f"[erro] script maior que {MAX_ROBLOX_SCRIPT} bytes; abra uma cópia menor para análise."
+    with open(destino, "r", encoding="utf-8", errors="replace") as arquivo:
+        return arquivo.read()
+
+
+def roblox_get_output(confirmar=None, limite=30):
+    try:
+        from jarvis.roblox_bridge import get_recent_output
+        return get_recent_output(limite=max(1, min(int(limite), 50)))
+    except Exception as erro:
+        return f"[erro] não foi possível consultar o Output do Roblox: {erro}"
 
 
 def criar_ficheiro(confirmar, caminho, conteudo):
@@ -570,6 +645,9 @@ def backup_codigo(confirmar=None):
 
 # ---------------- registro das ferramentas ----------------
 _FUNCOES = {
+    "roblox_list_scripts": roblox_list_scripts,
+    "roblox_read_script": roblox_read_script,
+    "roblox_get_output": roblox_get_output,
     "listar_diretorio": listar_diretorio,
     "ler_ficheiro": ler_ficheiro,
     "criar_ficheiro": criar_ficheiro,
@@ -610,6 +688,12 @@ def _t(nome, descricao, props=None, obrigatorios=None):
 _S = {"type": "string"}
 
 ESQUEMA = [
+    _t("roblox_list_scripts", "Lista scripts Lua/Luau dentro da pasta configurada em JARVIS_ROBLOX_PROJECT_DIR; não abre arquivos fora dela.",
+       {"busca": {**_S, "description": "Filtro opcional pelo caminho/nome"}}),
+    _t("roblox_read_script", "Lê, sem editar, um script .lua/.luau do projeto Roblox configurado. Use roblox_list_scripts para descobrir o caminho relativo.",
+       {"caminho": _S}, ["caminho"]),
+    _t("roblox_get_output", "Consulta erros e avisos capturados do Roblox Studio pelo plugin JARVIS. Se não houver conexão ou registros, explique como iniciar a captura.",
+       {"limite": {"type": "integer", "description": "Quantidade máxima de registros (1 a 50)"}}),
     _t("listar_diretorio",
        "Lista arquivos e pastas dentro de jarvis_workspace (inclui importados/).",
        {"caminho": {**_S, "description": "Subpasta (padrão '.')"}}),
@@ -617,7 +701,7 @@ ESQUEMA = [
        "Lê um arquivo de jarvis_workspace (inclusive importados/<projeto>/...), ou um destes arquivos do "
        "projeto (somente leitura): main.py, acoes.py, ferramentas.py, requirements.txt, README.md, "
        "jarvis.log, jarvis/settings.py, jarvis/audio.py, jarvis/workers.py, jarvis/ui.py, "
-       "jarvis/controller.py, plugins/<nome>.py. Arquivos grandes vêm em partes: use 'inicio' para continuar.",
+       "jarvis/controller.py, jarvis/memory.py, jarvis/idea_inbox.py, jarvis/routines.py, jarvis/reminders.py, jarvis/screen_vision.py, jarvis/system_status.py, plugins/<nome>.py. Arquivos grandes vêm em partes: use 'inicio' para continuar.",
        {"caminho": _S, "inicio": {"type": "integer", "description": "Posição inicial (padrão 0)"}},
        ["caminho"]),
     _t("criar_ficheiro",
